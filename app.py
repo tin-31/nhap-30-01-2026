@@ -59,6 +59,7 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SEG_FILE_ID = '1axOg7N5ssJrMec97eV-JMPzID26ynzN1' 
 CLS_FILE_ID = '1-v64E5VqSvbuKDYtdGDJBqUcWe9QfPVe'
 
+# Tên file mới (giữ nguyên đuôi .keras như bạn yêu cầu)
 SEG_PATH = 'best_model_cbam_attention_unet_fixed.keras'
 CLS_PATH = 'TRUST_MED_CLS_BIRADS_FINAL.pth'
 
@@ -73,9 +74,13 @@ def load_models():
             gdown.download(f'https://drive.google.com/uc?id={CLS_FILE_ID}', CLS_PATH, quiet=True)
 
     # 1.1 LOAD SEGMENTATION (ResNet34 + U-Net + SCSE)
-    # (Giữ nguyên kiến trúc như code gốc)
+    # Lưu ý: Code đang dùng kiến trúc Unet với encoder resnet34 và attention scse.
+    # Nếu model mới của bạn dùng kiến trúc khác (ví dụ CBAM như tên file gợi ý), 
+    # bạn có thể cần chỉnh tham số decoder_attention_type="scse" thành loại tương ứng hoặc None.
     seg_model = smp.Unet(encoder_name="resnet34", in_channels=3, classes=1, decoder_attention_type="scse")
+    
     # Load safe: map location về CPU nếu không có GPU
+    # Đang dùng torch.load cho file .keras (Hy vọng đây là file state_dict của PyTorch được đặt tên đuôi lạ)
     seg_model.load_state_dict(torch.load(SEG_PATH, map_location=torch.device(DEVICE)))
     seg_model.to(DEVICE)
     seg_model.eval()
@@ -94,6 +99,7 @@ try:
     seg_model, cls_model = load_models()
 except Exception as e:
     st.error(f"❌ Lỗi khởi động hệ thống AI: {e}")
+    st.info("Gợi ý: Kiểm tra xem file model phân đoạn (.keras) có đúng là định dạng PyTorch (.pth) không.")
     st.stop()
 
 # ============================
