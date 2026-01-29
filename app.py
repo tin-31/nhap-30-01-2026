@@ -1,9 +1,6 @@
 # ==========================================
 # 🩺 TRUST-MED AI: HỆ THỐNG HỖ TRỢ CHẨN ĐOÁN UNG THƯ VÚ
 # ==========================================
-# Phiên bản: Pro v4.0 (Giao diện Bác sĩ)
-# Tác giả: [Tên của bạn/Nhóm nghiên cứu]
-
 import streamlit as st
 import torch
 import numpy as np
@@ -27,7 +24,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS cho giao diện y tế chuyên nghiệp
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
@@ -41,12 +37,6 @@ st.markdown("""
         border-left: 5px solid #0066cc;
         margin-bottom: 20px;
     }
-    .metric-card {
-        text-align: center;
-        padding: 10px;
-        background: #f1f3f6;
-        border-radius: 8px;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -55,63 +45,82 @@ st.markdown("""
 # ============================
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# 🔥 CẬP NHẬT: FILE ID & PATH MỚI CHO MODEL PHÂN ĐOẠN
+# 🔥 CẬP NHẬT ID MODEL MỚI THEO YÊU CẦU CỦA BẠN
+# Lưu ý: Đây là file .keras, code sẽ cố gắng load nhưng cần file .pth để chạy đúng
 SEG_FILE_ID = '1axOg7N5ssJrMec97eV-JMPzID26ynzN1' 
 CLS_FILE_ID = '1-v64E5VqSvbuKDYtdGDJBqUcWe9QfPVe'
 
-# Tên file mới (giữ nguyên đuôi .keras như bạn yêu cầu)
-SEG_PATH = 'best_model_cbam_attention_unet_fixed.keras'
+# Tên file lưu tạm trên máy chủ
+SEG_PATH = 'seg_model_new.keras' # Đuôi .keras để gdown không bị lỗi định dạng
 CLS_PATH = 'TRUST_MED_CLS_BIRADS_FINAL.pth'
 
 @st.cache_resource
 def load_models():
-    # Tải file nếu chưa có
+    # Tải file từ Drive
     if not os.path.exists(SEG_PATH):
-        with st.spinner("📥 Đang tải mô hình Phân đoạn từ Cloud..."):
+        with st.spinner("📥 Đang tải Model Phân đoạn (Segmentation)..."):
             gdown.download(f'https://drive.google.com/uc?id={SEG_FILE_ID}', SEG_PATH, quiet=True)
+            
     if not os.path.exists(CLS_PATH):
-        with st.spinner("📥 Đang tải mô hình Phân loại từ Cloud..."):
+        with st.spinner("📥 Đang tải Model Phân loại (Classification)..."):
             gdown.download(f'https://drive.google.com/uc?id={CLS_FILE_ID}', CLS_PATH, quiet=True)
 
-    # 1.1 LOAD SEGMENTATION (ResNet34 + U-Net + SCSE)
-    # Lưu ý: Code đang dùng kiến trúc Unet với encoder resnet34 và attention scse.
-    # Nếu model mới của bạn dùng kiến trúc khác (ví dụ CBAM như tên file gợi ý), 
-    # bạn có thể cần chỉnh tham số decoder_attention_type="scse" thành loại tương ứng hoặc None.
+    # --- 1.1 SETUP SEGMENTATION MODEL ---
+    # Cảnh báo: Kiến trúc U-Net ResNet34
     seg_model = smp.Unet(encoder_name="resnet34", in_channels=3, classes=1, decoder_attention_type="scse")
     
-    # Load safe: map location về CPU nếu không có GPU
-    # Đang dùng torch.load cho file .keras (Hy vọng đây là file state_dict của PyTorch được đặt tên đuôi lạ)
-    seg_model.load_state_dict(torch.load(SEG_PATH, map_location=torch.device(DEVICE)))
+    # 🛡️ CƠ CHẾ BẮT LỖI ĐỊNH DẠNG (Quan trọng cho trường hợp của bạn)
+    try:
+        # Cố gắng load weight vào model PyTorch
+        seg_model.load_state_dict(torch.load(SEG_PATH, map_location=torch.device(DEVICE)))
+    except RuntimeError as e:
+        # Lỗi lệch kiến trúc hoặc file không phải PyTorch
+        if "metadata.json" in str(e) or "zip" in str(e) or "magic number" in str(e):
+            st.error(f"""
+            ❌ **LỖI ĐỊNH DẠNG MODEL:** File `{SEG_PATH}` bạn cung cấp là định dạng **Keras/TensorFlow**, không chạy được trên code **PyTorch**.
+            
+            👉 **Cách sửa:** Hãy tìm file model có đuôi `.pth` hoặc `.pt` và cập nhật lại ID.
+            """)
+            st.stop() # Dừng app lại an toàn
+        else:
+            st.error(f"❌ Lỗi kiến trúc model (Key Mismatch): Model bạn tải lên có thể không phải là ResNet34+Unet+SCSE. Chi tiết: {e}")
+            st.stop()
+    except Exception as e:
+        st.error(f"❌ Lỗi không xác định khi load Model Phân đoạn: {e}")
+        st.stop()
+        
     seg_model.to(DEVICE)
     seg_model.eval()
     
-    # 1.2 LOAD CLASSIFICATION (EfficientNet-B4)
+    # --- 1.2 SETUP CLASSIFICATION MODEL ---
     cls_model = models.efficientnet_b4(weights=None)
     cls_model.classifier[1] = torch.nn.Linear(cls_model.classifier[1].in_features, 4)
-    cls_model.load_state_dict(torch.load(CLS_PATH, map_location=torch.device(DEVICE)))
+    try:
+        cls_model.load_state_dict(torch.load(CLS_PATH, map_location=torch.device(DEVICE)))
+    except Exception as e:
+        st.error(f"❌ Lỗi load Model Phân loại: {e}")
+        st.stop()
+        
     cls_model.to(DEVICE)
     cls_model.eval()
     
     return seg_model, cls_model
 
-# Load model ngay khi khởi động
+# Load model
 try:
     seg_model, cls_model = load_models()
 except Exception as e:
-    st.error(f"❌ Lỗi khởi động hệ thống AI: {e}")
-    st.info("Gợi ý: Kiểm tra xem file model phân đoạn (.keras) có đúng là định dạng PyTorch (.pth) không.")
+    st.error(f"Hệ thống dừng do lỗi nạp model.")
     st.stop()
 
 # ============================
-# 2. CÁC HÀM XỬ LÝ ẢNH (LOGIC CŨ)
+# 2. CÁC HÀM XỬ LÝ ẢNH
 # ============================
 def validate_image(image_pil):
     img_np = np.array(image_pil)
     if img_np.shape[0] < 100 or img_np.shape[1] < 100: return False, "Kích thước quá nhỏ"
-    if len(img_np.shape) == 3:
-        if np.std(img_np, axis=2).mean() > 20: return False, "Ảnh màu (không phải siêu âm)"
-    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    if cv2.Laplacian(gray, cv2.CV_64F).var() < 5: return False, "Ảnh quá mờ/đen"
+    if len(img_np.shape) == 3 and np.std(img_np, axis=2).mean() > 20: 
+        return False, "Ảnh màu (không phải siêu âm)"
     return True, "Hợp lệ"
 
 def letterbox_image(image, size):
@@ -177,203 +186,97 @@ def calc_trust_score(probs, mask_area_ratio):
     return 0.7 * score_cls + 0.3 * score_seg
 
 # =====================================================
-# 4) SIDEBAR & CHỌN TRANG (NAVIGATION)
+# UI LAYOUT
 # =====================================================
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3004/3004458.png", width=80)
 st.sidebar.title("TRUST-MED AI")
 st.sidebar.markdown("**Hệ thống hỗ trợ chẩn đoán hình ảnh**")
-st.sidebar.markdown("---")
+menu = st.sidebar.radio("Chức năng:", ["🏠 Chẩn đoán", "📖 Hướng dẫn", "ℹ️ Giới thiệu"])
 
-menu = st.sidebar.radio(
-    "Danh mục chức năng:",
-    ["🏠 Bàn làm việc (Chẩn đoán)", "📖 Hướng dẫn sử dụng", "📚 Cơ sở dữ liệu huấn luyện", "ℹ️ Giới thiệu dự án"]
-)
-
-# =====================================================
-# TRANG 1: BÀN LÀM VIỆC (MAIN APP)
-# =====================================================
-if menu == "🏠 Bàn làm việc (Chẩn đoán)":
+if menu == "🏠 Chẩn đoán":
     st.title("🖥️ Bàn làm việc Bác sĩ")
-    st.info("💡 **Gợi ý:** Tải ảnh siêu âm lên để AI phân tích tự động. Kết quả chỉ mang tính tham khảo.")
-
     col_left, col_right = st.columns([1, 2])
 
     with col_left:
         st.subheader("📥 Nhập dữ liệu")
-        uploaded_file = st.file_uploader("Chọn ảnh siêu âm (JPG/PNG/DICOM)", type=["jpg", "png", "jpeg"])
-        
-        with st.expander("⚙️ Cấu hình nâng cao"):
-            seg_threshold = st.slider("Độ nhạy tìm khối u", 0.1, 0.9, 0.5, 0.05)
-            use_post_process = st.checkbox("Bật khử nhiễu tự động", value=True)
+        uploaded_file = st.file_uploader("Chọn ảnh siêu âm", type=["jpg", "png", "jpeg"])
+        with st.expander("⚙️ Cấu hình"):
+            seg_threshold = st.slider("Độ nhạy", 0.1, 0.9, 0.5)
+            use_post_process = st.checkbox("Khử nhiễu", value=True)
 
     with col_right:
-        if uploaded_file is None:
-            st.warning("👈 Vui lòng tải ảnh lên để bắt đầu.")
-            st.image("https://img.freepik.com/free-vector/doctor-examining-patient-clinic_23-2148856559.jpg", width=400, caption="Hệ thống sẵn sàng...")
-        else:
-            # XỬ LÝ & HIỂN THỊ
+        if uploaded_file:
             original_pil = Image.open(uploaded_file).convert("RGB")
             original_np = np.array(original_pil)
-            
-            # Guardrail
             is_valid, msg = validate_image(original_pil)
+            
             if not is_valid:
-                st.error(f"⛔️ ẢNH KHÔNG HỢP LỆ: {msg}")
+                st.error(f"⛔️ {msg}")
             else:
-                progress_bar = st.progress(0, text="Đang khởi tạo...")
+                progress = st.progress(0, "Đang xử lý...")
                 
-                # --- BƯỚC 1: PHÂN ĐOẠN ---
-                progress_bar.progress(30, text="Đang phân đoạn tổn thương (U-Net)...")
+                # Segmentation
+                progress.progress(30, "Đang phân đoạn...")
                 input_pil, nw, nh, dx, dy = letterbox_image(original_pil, (256, 256))
-                to_tensor = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-                input_tensor = to_tensor(input_pil).unsqueeze(0).to(DEVICE)
+                trans = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+                inp_tensor = trans(input_pil).unsqueeze(0).to(DEVICE)
                 
                 with torch.no_grad():
-                    mask_prob = torch.sigmoid(seg_model(input_tensor)).cpu().numpy()[0,0]
+                    mask_prob = torch.sigmoid(seg_model(inp_tensor)).cpu().numpy()[0,0]
                 
                 mask_valid = mask_prob[dy:dy+nh, dx:dx+nw]
                 mask_resized = cv2.resize(mask_valid, (original_np.shape[1], original_np.shape[0]))
-                
-                if use_post_process: mask_binary = post_process_mask(mask_resized, threshold=seg_threshold)
-                else: mask_binary = (mask_resized > seg_threshold).astype(np.uint8)
-                
-                # --- BƯỚC 2: CẮT ROI & PHÂN LOẠI ---
-                progress_bar.progress(60, text="Đang phân tích bệnh học (EfficientNet)...")
-                (x1, y1, x2, y2), roi_status = get_bounding_box(mask_binary)
+                mask_binary = post_process_mask(mask_resized, seg_threshold) if use_post_process else (mask_resized > seg_threshold).astype(np.uint8)
+
+                # Classification
+                progress.progress(60, "Đang phân loại...")
+                (x1, y1, x2, y2), _ = get_bounding_box(mask_binary)
                 roi_img = original_np[y1:y2, x1:x2]
                 
-                # Visuals
-                mask_display = original_np.copy()
-                mask_display[mask_binary == 1] = [0, 255, 0]
-                overlay = cv2.addWeighted(original_np, 0.7, mask_display, 0.3, 0)
-                cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                
-                # Classification Logic
                 roi_pil = Image.fromarray(roi_img)
-                trans_cls = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-                input_cls = trans_cls(roi_pil).unsqueeze(0).to(DEVICE)
+                inp_cls = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])(roi_pil).unsqueeze(0).to(DEVICE)
                 
-                heatmap, pred_idx, probs = cam_extractor(input_cls)
+                heatmap, _, probs = cam_extractor(inp_cls)
                 mask_ratio = np.sum(mask_binary) / (original_np.shape[0]*original_np.shape[1])
                 trust_score = calc_trust_score(probs, mask_ratio)
                 
                 probs_np = probs.detach().cpu().numpy()[0]
-                prob_benign = probs_np[0] + probs_np[1]
-                prob_malignant = probs_np[2] + probs_np[3]
+                prob_mal = probs_np[2] + probs_np[3]
+                prob_ben = probs_np[0] + probs_np[1]
                 
-                # Logic Kết luận
-                if mask_ratio < 0.005:
-                    status = "KHÔNG PHÁT HIỆN BẤT THƯỜNG (BI-RADS 1)"; color = "green"
-                    prob_display = 0.05 # Giả lập thấp
-                else:
-                    if prob_malignant > prob_benign:
-                        status = "NGHI NGỜ ÁC TÍNH (BI-RADS 4/5)"; color = "red"
-                        prob_display = prob_malignant
-                    else:
-                        status = "KHẢ NĂNG CAO LÀNH TÍNH (BI-RADS 2/3)"; color = "blue"
-                        prob_display = prob_benign
+                progress.progress(100, "Hoàn tất!"); time.sleep(0.5); progress.empty()
+
+                # Report
+                color = "green" if mask_ratio < 0.005 else ("red" if prob_mal > prob_ben else "blue")
+                status = "BI-RADS 1" if mask_ratio < 0.005 else ("NGHI NGỜ ÁC TÍNH" if prob_mal > prob_ben else "LÀNH TÍNH")
                 
-                progress_bar.progress(100, text="Hoàn tất!")
-                time.sleep(0.5); progress_bar.empty()
-                
-                # --- BƯỚC 3: HIỂN THỊ KẾT QUẢ (DASHBOARD STYLE) ---
                 st.markdown(f"""
                 <div class="report-box">
-                    <h3 style="color:{color}; margin-top:0;">📋 KẾT QUẢ: {status}</h3>
-                    <p><b>Độ tin cậy của AI:</b> {trust_score:.1%}</p>
+                    <h3 style="color:{color}; margin:0;">📋 KẾT QUẢ: {status}</h3>
+                    <p>Độ tin cậy: {trust_score:.1%}</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Metrics
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Xác suất Lành tính", f"{prob_benign:.1%}")
-                m2.metric("Xác suất Ác tính", f"{prob_malignant:.1%}", delta_color="inverse")
-                m3.metric("Diện tích tổn thương", f"{mask_ratio*100:.2f}% ảnh")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Lành tính", f"{prob_ben:.1%}")
+                c2.metric("Ác tính", f"{prob_mal:.1%}")
+                c3.metric("Kích thước u", f"{mask_ratio*100:.2f}%")
                 
                 st.divider()
-                st.subheader("🔬 Hình ảnh phân tích chi tiết")
+                t1, t2, t3 = st.tabs(["Ảnh gốc", "Tổn thương", "AI Heatmap"])
+                t1.image(original_pil, use_column_width=True)
                 
-                tab_img1, tab_img2, tab_img3 = st.tabs(["1. Ảnh Gốc", "2. Định vị Tổn thương", "3. Bản đồ nhiệt AI"])
+                mask_disp = original_np.copy()
+                mask_disp[mask_binary==1] = [0,255,0]
+                t2.image(cv2.addWeighted(original_np,0.7,mask_disp,0.3,0), use_column_width=True)
                 
-                with tab_img1:
-                    st.image(original_pil, use_column_width=True)
-                with tab_img2:
-                    st.image(overlay, caption="Vùng xanh lá: Khối u | Khung xanh dương: ROI", use_column_width=True)
-                with tab_img3:
-                    hm_color = cv2.applyColorMap(np.uint8(255*heatmap), cv2.COLORMAP_JET)
-                    hm_color = cv2.cvtColor(hm_color, cv2.COLOR_BGR2RGB)
-                    superimposed = cv2.addWeighted(cv2.resize(roi_img, (224,224)), 0.6, hm_color, 0.4, 0)
-                    st.image(superimposed, caption="Vùng màu đỏ là nơi AI tập trung để chẩn đoán", use_column_width=True)
+                hm_color = cv2.cvtColor(cv2.applyColorMap(np.uint8(255*heatmap), cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+                t3.image(cv2.addWeighted(cv2.resize(roi_img,(224,224)),0.6,hm_color,0.4,0), use_column_width=True)
 
-# =====================================================
-# TRANG 2: HƯỚNG DẪN SỬ DỤNG
-# =====================================================
-elif menu == "📖 Hướng dẫn sử dụng":
-    st.title("📖 Hướng dẫn sử dụng TRUST-MED")
-    st.markdown("""
-    ### Chào mừng bác sĩ đến với hệ thống!
-    Dưới đây là quy trình 3 bước để sử dụng phần mềm hiệu quả:
+elif menu == "📖 Hướng dẫn":
+    st.title("Hướng dẫn sử dụng")
+    st.markdown("Tải ảnh siêu âm lên để hệ thống tự động phân tích.")
 
-    #### Bước 1: Chuẩn bị hình ảnh
-    * Hệ thống hỗ trợ các định dạng ảnh phổ biến: **JPG, PNG, JPEG**.
-    * Ảnh nên là ảnh siêu âm thô (B-mode), hạn chế các ảnh có chứa mũi tên chỉ dẫn hoặc marker màu của máy siêu âm cũ để tránh nhiễu.
-
-    #### Bước 2: Tải ảnh và Phân tích
-    1. Truy cập vào mục **"🏠 Bàn làm việc"** ở menu bên trái.
-    2. Nhấn nút **"Browse files"** để chọn ảnh từ máy tính.
-    3. Hệ thống sẽ tự động chạy qua 2 mô hình AI:
-        * **Segmentation Model:** Để tìm và khoanh vùng khối u.
-        * **Classification Model:** Để đánh giá tính chất lành/ác.
-
-    #### Bước 3: Đọc kết quả
-    * **Thanh trạng thái:** Sẽ hiện màu ĐỎ (Nguy hiểm), XANH DƯƠNG (Lành tính) hoặc XANH LÁ (Bình thường).
-    * **Hình ảnh trực quan:** Bác sĩ có thể xem tab "Bản đồ nhiệt" để biết AI đang nghi ngờ vùng nào nhất trên khối u (vùng màu đỏ rực).
-    """)
-
-# =====================================================
-# TRANG 3: CƠ SỞ DỮ LIỆU
-# =====================================================
-elif menu == "📚 Cơ sở dữ liệu huấn luyện":
-    st.title("📊 Nguồn dữ liệu huấn luyện")
-    st.markdown("Hệ thống TRUST-MED được huấn luyện trên **12 bộ dữ liệu** uy tín (công khai và nội bộ), đảm bảo tính đa dạng sinh học và khả năng kháng nhiễu.")
-    
-    # Danh sách 12 dataset chuẩn
-    datasets = [
-        ("BUSI (Breast Ultrasound Images)", "Cairo Univ", "Dataset chuẩn vàng với nhãn phân đoạn chi tiết."),
-        ("BUSBRA (Brazil)", "Đa trung tâm", "Dữ liệu thu thập từ nhiều dòng máy siêu âm khác nhau."),
-        ("UDIAT (Tây Ban Nha)", "Bệnh viện Parc Taulí", "Chuyên về các tổn thương nhỏ (small lesions)."),
-        ("OASBUD (Ba Lan)", "Dữ liệu mở", "Kèm theo nhãn BI-RADS chuẩn."),
-        ("STU (Trung Quốc)", "Shantou Univ", "Dataset lớn khu vực Châu Á."),
-        ("Thamburaj Dataset", "Tư nhân", "Tập trung vào đặc trưng hình thái học."),
-        ("HMSS (Mexico)", "Hospital Move", "Dữ liệu lâm sàng thực tế."),
-        ("Mendeley Data V2", "Rodrigues et al.", "Cân bằng giữa Lành và Ác."),
-        ("BrEaST-Lesions", "Kaggle", "Tổng hợp đa nguồn."),
-        ("Dataset A (Private)", "Nội bộ", "Dữ liệu bổ sung để cân bằng lớp."),
-        ("VinDr-Mammo (Tham chiếu)", "VinBigData", "Dữ liệu đặc thù người Việt Nam."),
-        ("HisBreast (Việt Nam)", "Bệnh viện VN", "Dữ liệu lâm sàng trọng điểm của đề tài.")
-    ]
-    
-    for i, (name, source, desc) in enumerate(datasets):
-        with st.expander(f"{i+1}. {name}"):
-            st.markdown(f"**Nguồn:** {source}")
-            st.markdown(f"**Mô tả:** {desc}")
-
-# =====================================================
-# TRANG 4: GIỚI THIỆU
-# =====================================================
-elif menu == "ℹ️ Giới thiệu dự án":
-    st.title("ℹ️ Về dự án TRUST-MED")
-    st.markdown("""
-    ### 🎯 Mục tiêu
-    Xây dựng hệ thống AI hỗ trợ chẩn đoán ung thư vú tự động, giúp giảm tải cho bác sĩ chẩn đoán hình ảnh và tăng độ chính xác trong tầm soát sớm.
-
-    ### 🛠️ Công nghệ lõi
-    * **Phân đoạn (Segmentation):** U-Net với kiến trúc ResNet34 và cơ chế Attention (scSE) giúp bắt trọn biên dạng khối u.
-    * **Phân loại (Classification):** EfficientNet-B4 - một trong những mô hình CNN hiệu quả nhất hiện nay.
-    * **Giải thích (XAI):** Tích hợp Grad-CAM để minh bạch hóa quyết định của AI.
-
-    ### ⚠️ Tuyên bố miễn trừ trách nhiệm
-    * Ứng dụng này là sản phẩm nghiên cứu khoa học.
-    * Kết quả của AI **không thay thế** chẩn đoán của bác sĩ chuyên khoa.
-    * Người dùng chịu trách nhiệm khi sử dụng thông tin từ ứng dụng này.
-    """)
+elif menu == "ℹ️ Giới thiệu":
+    st.title("Giới thiệu")
+    st.markdown("Hệ thống TRUST-MED AI hỗ trợ chẩn đoán ung thư vú.")
